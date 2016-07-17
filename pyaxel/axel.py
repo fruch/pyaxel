@@ -16,19 +16,21 @@
 #    under the License.
 from __future__ import print_function
 
-from gevent import monkey
-from gevent.pool import Pool
-monkey.patch_all()
-
-import os
-import sys
+import argparse
+import fileinput
 import glob
+import os
 import signal
+import sys
 import time
 import timeit
-import argparse
+
 import requests
-import fileinput
+import tqdm
+from gevent import monkey
+from gevent.pool import Pool
+
+monkey.patch_all()
 
 
 def catch_ctrl_c(signum, frame):
@@ -37,11 +39,11 @@ def catch_ctrl_c(signum, frame):
 
 
 class Axel(object):
-    def __init__(self):
+    def __init__(self, url=None, count=8):
         signal.signal(signal.SIGINT, catch_ctrl_c)
 
-        self.count = 8
-        self.url = None
+        self.count = count
+        self.url = url
         self.speed = 0
         self.total_time = 0
 
@@ -143,26 +145,29 @@ class Axel(object):
                 f.flush()
 
     def print_progress(self, pool, bytecount):
-        while 1:
-            time.sleep(0.1)
+        self.last_total = sum(self.startcount)
+        with tqdm.tqdm(initial=self.last_total, total=int(self.content_length),
+                       unit_scale=True, unit="B") as pbar:
+            while 1:
+                time.sleep(0.1)
 
-            total = float(sum(bytecount))
-            if not total:
-                continue
+                total = float(sum(bytecount))
+                t = int(total + sum(self.startcount)) - self.last_total
+                if t > 0:
+                    pbar.update(t)
+                if not total:
+                    continue
 
-            if pool.free_count() == pool.size:
-                break
+                if pool.free_count() == pool.size:
+                    break
 
-            self.speed = total/(timeit.default_timer() - self.start)
-            remaining = self.content_length - total - sum(self.startcount)
-            percent = \
-                ((total + sum(self.startcount)) / self.content_length) * 100
-            sys.stdout.write('\r[%3.00f%%] %7.02f MB/s [%4.00fs] ' %
-                             (percent, self.speed/1024**2,
-                              remaining/self.speed))
-            sys.stdout.flush()
+                self.last_total = int(total + sum(self.startcount))
 
     def fetch(self):
+        if not self.content_length:
+            self.get_file_info()
+            self.resume_check()
+
         bytecount = []
         self.start = timeit.default_timer()
         p = Pool(size=self.count)
@@ -191,6 +196,10 @@ class Axel(object):
         for f in self.files:
             os.unlink(f)
 
+    def fetch_n_stitch(self):
+        self.fetch()
+        self.stitch()
+
     def print_final(self):
         print('\nDownloaded %.00f MB in %.00f seconds. (%.02f MB/s)' %
               (self.content_length/1024**2,
@@ -198,12 +207,11 @@ class Axel(object):
                self.speed/1024**2))
 
 
-if __name__ == '__main__':
+def main():
     axel = Axel()
     axel.parse_args()
-    axel.get_file_info()
-    axel.resume_check()
-    axel.print_start()
-    axel.fetch()
-    axel.stitch()
-    axel.print_final()
+    axel.fetch_n_stitch()
+
+
+if __name__ == "__main__":
+    main()
